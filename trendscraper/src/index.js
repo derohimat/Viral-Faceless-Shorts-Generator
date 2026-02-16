@@ -202,7 +202,7 @@ app.post("/burn", async (req, res) => {
 
     // Burn subtitles, combine video + audio
     await execPromise(
-      `ffmpeg -y -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "subtitles=${assPath}:fontsdir=/app/fonts" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
+      `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "subtitles=${assPath}:fontsdir=/app/fonts" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
     );
 
     res.setHeader("Content-Type", "video/mp4");
