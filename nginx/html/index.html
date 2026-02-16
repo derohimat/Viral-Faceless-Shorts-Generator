@@ -238,6 +238,9 @@
         btn.textContent = "Download Video";
         card.appendChild(btn);
       }
+      card.appendChild(btn);
+    }
+    saveState();
     }
 
     function createCard(id, trendTitle) {
@@ -253,6 +256,51 @@
         <div class="status-label mt-1 text-muted" style="font-size: 0.8rem;">Queued...</div>
       `;
       cardGrid.appendChild(card);
+      saveState();
+    }
+
+    function saveState() {
+      const cards = [];
+      document.querySelectorAll(".card-tile").forEach(card => {
+        const id = card.id;
+        const title = card.querySelector("h6").textContent;
+        const description = card.querySelector("p").textContent;
+        const progress = card.querySelector(".progress-bar").style.width;
+        const label = card.querySelector(".status-label").textContent;
+        const downloadBtn = card.querySelector("a");
+        const downloadUrl = downloadBtn ? downloadBtn.href : null;
+
+        // specific logic to avoid saving blob urls that expire
+        // for now we just save the metadata
+        cards.push({ id, title, description, progress, label });
+      });
+      localStorage.setItem("cards", JSON.stringify(cards));
+    }
+
+    function loadState() {
+      const saved = localStorage.getItem("cards");
+      if (saved) {
+        const cards = JSON.parse(saved);
+        cards.forEach(c => {
+          const card = document.createElement("div");
+          card.id = c.id;
+          card.className = "card-tile";
+          card.innerHTML = `
+            <h6>${c.title}</h6>
+            <p>${c.description}</p>
+            <div class="progress">
+              <div class="progress-bar" style="width: ${c.progress}"></div>
+            </div>
+            <div class="status-label mt-1 text-muted" style="font-size: 0.8rem;">${c.label}</div>
+          `;
+          // If it was completed, we can't restore the blob URL easily without backend changes.
+          // So we mark it as expired or needing regeneration if it was a blob.
+          if (c.label === "Video ready") {
+            card.querySelector(".status-label").textContent = "Video expired (Refresh cleared cache)";
+          }
+          cardGrid.appendChild(card);
+        });
+      }
     }
 
     async function withRetry(taskFn, onRetry) {
@@ -280,6 +328,10 @@
       const sort = document.getElementById("sort").value;
       const category = document.getElementById("category").value;
       const maxVideos = parseInt(document.getElementById("maxVideos").value) || Infinity;
+
+
+
+      showToast("⏳ Scraping Google Trends... This may take a few seconds.");
 
       let trends = await withRetry(() =>
         fetch("/api/scrape", {
@@ -481,6 +533,10 @@
       document.getElementById("status").addEventListener("input", e => localStorage.setItem("status", e.target.value));
       document.getElementById("sort").addEventListener("input", e => localStorage.setItem("sort", e.target.value));
       document.getElementById("category").addEventListener("change", e => localStorage.setItem("category", e.target.value));
+      document.getElementById("sort").addEventListener("input", e => localStorage.setItem("sort", e.target.value));
+      document.getElementById("category").addEventListener("change", e => localStorage.setItem("category", e.target.value));
+
+      loadState();
     });
   </script>
 
