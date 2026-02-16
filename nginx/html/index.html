@@ -85,6 +85,9 @@
       <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#workflowModal">
         Trend-Based Workflow
       </button>
+      <button class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">
+        ⚙️ Settings
+      </button>
     </div>
   </div>
 
@@ -146,6 +149,82 @@
         <div class="modal-footer">
           <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
           <button class="btn btn-primary" onclick="executeWorkflow()" data-bs-dismiss="modal">Execute Workflow</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Settings Modal -->
+  <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="settingsModalLabel">Global Settings</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form id="settingsForm">
+            <h6 class="border-bottom pb-2 mb-3">Content & Voice</h6>
+            <div class="mb-3">
+              <label for="setLanguage" class="form-label">Language (Script & Translation)</label>
+              <select class="form-control" id="setLanguage">
+                <option value="english">English (Default)</option>
+                <option value="indonesian">Indonesian</option>
+                <option value="spanish">Spanish</option>
+                <option value="french">French</option>
+                <option value="german">German</option>
+                <option value="italian">Italian</option>
+                <option value="portuguese">Portuguese</option>
+                <option value="hindi">Hindi</option>
+                <option value="japanese">Japanese</option>
+              </select>
+              <small class="text-muted">Note: TTS voice may have an English accent for other languages.</small>
+            </div>
+            <div class="mb-3">
+              <label for="setSpeaker" class="form-label">TTS Speaker ID (Coqui)</label>
+              <input type="text" class="form-control" id="setSpeaker" placeholder="e.g. p340, p226" value="p340">
+              <small class="text-muted">Common male: p340, p226. Common female: p335, p307.</small>
+            </div>
+
+            <h6 class="border-bottom pb-2 mb-3 mt-4">Subtitles & Visuals</h6>
+            <div class="row g-2">
+              <div class="col-6">
+                <label for="setFontSize" class="form-label">Font Size</label>
+                <input type="number" class="form-control" id="setFontSize" value="30">
+              </div>
+              <div class="col-6">
+                <label for="setOutline" class="form-label">Outline Width</label>
+                <input type="number" class="form-control" id="setOutline" value="2">
+              </div>
+            </div>
+
+            <h6 class="border-bottom pb-2 mb-3 mt-4">Watermark</h6>
+            <div class="mb-3">
+              <label for="setWatermark" class="form-label">Watermark Text</label>
+              <input type="text" class="form-control" id="setWatermark" placeholder="e.g. @MyChannel" value="">
+            </div>
+            <div class="row g-2">
+              <div class="col-6">
+                <label for="setWmColor" class="form-label">Color</label>
+                <select class="form-control" id="setWmColor">
+                  <option value="white">White</option>
+                  <option value="black">Black</option>
+                  <option value="red">Red</option>
+                  <option value="yellow">Yellow</option>
+                  <option value="blue">Blue</option>
+                </select>
+              </div>
+              <div class="col-6">
+                <label for="setWmOpacity" class="form-label">Opacity (0.1 - 1.0)</label>
+                <input type="number" class="form-control" id="setWmOpacity" value="0.5" step="0.1" min="0.1" max="1.0">
+              </div>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary" onclick="saveSettings()" data-bs-dismiss="modal">Save
+            Settings</button>
         </div>
       </div>
     </div>
@@ -238,9 +317,7 @@
         btn.textContent = "Download Video";
         card.appendChild(btn);
       }
-      card.appendChild(btn);
-    }
-    saveState();
+      saveState();
     }
 
     function createCard(id, trendTitle) {
@@ -315,6 +392,33 @@
       }
     }
 
+    function saveSettings() {
+      const settings = {
+        language: document.getElementById("setLanguage").value,
+        speaker: document.getElementById("setSpeaker").value,
+        fontsize: document.getElementById("setFontSize").value,
+        outline: document.getElementById("setOutline").value,
+        watermark: document.getElementById("setWatermark").value,
+        wmColor: document.getElementById("setWmColor").value,
+        wmOpacity: document.getElementById("setWmOpacity").value
+      };
+      localStorage.setItem("appSettings", JSON.stringify(settings));
+      showToast("Settings saved!");
+    }
+
+    function getSettings() {
+      const saved = localStorage.getItem("appSettings");
+      return saved ? JSON.parse(saved) : {
+        language: "english",
+        speaker: "p340",
+        fontsize: 30,
+        outline: 2,
+        watermark: "",
+        wmColor: "white",
+        wmOpacity: 0.5
+      };
+    }
+
     function generateId() {
       const array = new Uint8Array(10);
       window.crypto.getRandomValues(array);
@@ -380,7 +484,9 @@
       const { id, trend } = generateQueue.shift();
       updateCard(id, { progress: 10, label: "Generating content..." });
 
-      const generated = await withRetry(() => generateContent(trend), () => updateCard(id, { label: "Retrying generation..." }));
+      const settings = getSettings();
+      // Pass language preference to generateContent
+      const generated = await withRetry(() => generateContent({ ...trend, language: settings.language }), () => updateCard(id, { label: "Retrying generation..." }));
       updateCard(id, {
         title: generated.title,
         description: generated.description,
@@ -401,7 +507,9 @@
       const { id, generated } = ttsQueue.shift();
       updateCard(id, { progress: 50, label: "Generating TTS..." });
 
-      const ttsAudio = await withRetry(() => generateTTS(generated.body), () => updateCard(id, { label: "Retrying TTS..." }));
+      const settings = getSettings();
+      // Pass speaker preference to generateTTS
+      const ttsAudio = await withRetry(() => generateTTS(generated.body, settings.speaker), () => updateCard(id, { label: "Retrying TTS..." }));
       alignQueue.push({ id, generated, ttsAudio });
       updateCard(id, { progress: 60, label: "TTS generated" });
 
@@ -433,7 +541,8 @@
       const { id, srt, ttsAudio, title } = burnQueue.shift();
       updateCard(id, { progress: 90, label: "Rendering video..." });
 
-      const video = await withRetry(() => burnVideo(ttsAudio.base64, srt), () => updateCard(id, { label: "Retrying rendering..." }));
+      const settings = getSettings();
+      const video = await withRetry(() => burnVideo(ttsAudio.base64, srt, settings), () => updateCard(id, { label: "Retrying rendering..." }));
       updateCard(id, { progress: 100, label: "Video ready", downloadUrl: video.url, title });
 
       burnLock = false;
@@ -459,13 +568,14 @@
 
     let speaker_id = undefined;
 
-    async function generateTTS(text) {
-      if (!speaker_id) {
+    async function generateTTS(text, outputSpeakerId) {
+      if (!outputSpeakerId && !speaker_id) {
         const res = await fetch("/api/coquiSpeakerId");
         const data = await res.json();
         speaker_id = data.speakerId;
       }
-      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speaker_id}`);
+      const speakerToUse = outputSpeakerId || speaker_id;
+      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speakerToUse}`);
       const blob = await res.blob();
       const base64 = await blobToBase64(blob);
       return { base64 };
@@ -481,11 +591,21 @@
       return result.srt;
     }
 
-    async function burnVideo(audioBase64, srt) {
+    async function burnVideo(audioBase64, srt, settings) {
+      const body = {
+        audio: audioBase64,
+        subtitles: srt,
+        fontsize: settings.fontsize,
+        outline: settings.outline,
+        watermark: settings.watermark,
+        watermarkColor: settings.wmColor,
+        watermarkOpacity: settings.wmOpacity
+      };
+
       const res = await fetch("/api/burn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio: audioBase64, subtitles: srt })
+        body: JSON.stringify(body)
       });
       const blob = await res.blob();
       return { url: URL.createObjectURL(blob) };
@@ -533,10 +653,19 @@
       document.getElementById("status").addEventListener("input", e => localStorage.setItem("status", e.target.value));
       document.getElementById("sort").addEventListener("input", e => localStorage.setItem("sort", e.target.value));
       document.getElementById("category").addEventListener("change", e => localStorage.setItem("category", e.target.value));
-      document.getElementById("sort").addEventListener("input", e => localStorage.setItem("sort", e.target.value));
-      document.getElementById("category").addEventListener("change", e => localStorage.setItem("category", e.target.value));
+
 
       loadState();
+
+      // Load settings into UI
+      const settings = getSettings();
+      document.getElementById("setLanguage").value = settings.language;
+      document.getElementById("setSpeaker").value = settings.speaker;
+      document.getElementById("setFontSize").value = settings.fontsize;
+      document.getElementById("setOutline").value = settings.outline;
+      document.getElementById("setWatermark").value = settings.watermark;
+      document.getElementById("setWmColor").value = settings.wmColor;
+      document.getElementById("setWmOpacity").value = settings.wmOpacity;
     });
   </script>
 

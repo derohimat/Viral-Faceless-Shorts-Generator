@@ -128,14 +128,44 @@ app.post("/scrape", async (req, res) => {
 
 // ---------------- /generate ----------------
 app.post("/generate", async (req, res) => {
+  const { language = "english", ...data } = req.body;
+
+  let currentPrompt = prompt;
+
+  // Dynamic translation if language is not english
+  if (language.toLowerCase() !== "english") {
+    try {
+      const translationResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: `System: You are a professional translator. Please translate the following prompt from english to ${language}. Ensure the translation is accurate and meaning is preserved. JSON contents MUST be translated in ${language} too, that's mandatory. Omit the system prompt from the translation and translate only user content, ensure full prompt is translated (do not miss any part, and DO NOT add any additional part not in the prompt).\n\n User:` },
+                { text: prompt },
+              ],
+            },
+          ],
+        }),
+      });
+      const translationData = await translationResponse.json();
+      if (translationData.candidates && translationData.candidates[0].content) {
+        currentPrompt = translationData.candidates[0].content.parts[0].text;
+      }
+    } catch (e) {
+      console.error("Translation failed, falling back to English prompt", e);
+    }
+  }
+
   const raw = JSON.stringify({
     contents: [
       {
         parts: [
           {
-            text: prompt,
+            text: currentPrompt,
           },
-          { text: JSON.stringify(req.body) },
+          { text: JSON.stringify(data) },
         ],
       },
     ],
@@ -148,19 +178,19 @@ app.post("/generate", async (req, res) => {
   });
 
   const geminiRes = await response.json();
-  const data = geminiRes.candidates[0].content.parts[0].text;
-  const json = data.substring(data.indexOf("{"), data.lastIndexOf("}") + 1);
+  const resText = geminiRes.candidates[0].content.parts[0].text;
+  const json = resText.substring(resText.indexOf("{"), resText.lastIndexOf("}") + 1);
   try {
     return res.json(JSON.parse(json));
   } catch (err) {
     console.error("Error parsing JSON:", err);
-    return res.status(500).json({ error: "Failed to parse JSON response", response: data });
+    return res.status(500).json({ error: "Failed to parse JSON response", response: resText });
   }
 });
 
 // ---------------- /burn ----------------
 app.post("/burn", async (req, res) => {
-  let { video, audio, subtitles, fontsize = 30, outline = 2 } = req.body;
+  let { video, audio, subtitles, fontsize = 30, outline = 2, watermark, watermarkColor = "white", watermarkOpacity = 0.5 } = req.body;
   if (!audio || !subtitles) return res.status(400).send("Missing parameters");
 
   const tmp = `/tmp/${uuidv4()}`;
@@ -200,9 +230,23 @@ app.post("/burn", async (req, res) => {
     await execPromise(`sed -i '/^Style:/c\\Style: Default,Montserrat ExtraBold,${fontsize},&H00FFFFFF,&H00000000,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,${outline},2,10,10,10,1' "${assPath}"`);
     await execPromise(`grep -q "WrapStyle" "${assPath}" && sed -i 's/WrapStyle.*/WrapStyle: 0/' "${assPath}" || sed -i '/^\\[Script Info\\]/a WrapStyle: 0' "${assPath}"`);
 
+    // Build filter string
+    // Subtitles filter
+    let filters = `subtitles=${assPath}:fontsdir=/app/fonts`;
+
+    // Add watermark if present
+    if (watermark) {
+      // Simple positioning: centered at the top/bottom or just bottom right? 
+      // Let's do bottom center with padding.
+      // opacity adjustment requires fontcolor=white@0.5 format if using text, or using alpha in drawtext.
+      // ffmpeg drawtext alpha: fontcolor_expr=...
+      // simplest: fontcolor=${watermarkColor}@${watermarkOpacity}
+      filters += `,drawtext=text='${watermark}':x=(w-text_w)/2:y=h-th-50:fontsize=24:fontcolor=${watermarkColor}@${watermarkOpacity}:borderw=1:bordercolor=black`;
+    }
+
     // Burn subtitles, combine video + audio
     await execPromise(
-      `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "subtitles=${assPath}:fontsdir=/app/fonts" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
+      `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "${filters}" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
     );
 
     res.setHeader("Content-Type", "video/mp4");
