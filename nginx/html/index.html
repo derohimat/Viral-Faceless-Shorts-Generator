@@ -285,9 +285,14 @@
       setTimeout(() => toast.remove(), 4000);
     }
 
-    function updateCard(id, { title, description, progress, label, downloadUrl }) {
+    function updateCard(id, { title, description, progress, label, downloadUrl, category }) {
       const card = document.getElementById(id);
       if (!card) return;
+
+      if (category) {
+        const catEl = card.querySelector(".text-muted.category-label");
+        if (catEl) catEl.textContent = category;
+      }
 
       if (title) {
         const titleEl = card.querySelector("h6");
@@ -320,12 +325,13 @@
       saveState();
     }
 
-    function createCard(id, trendTitle) {
+    function createCard(id, trendTitle, category = "") {
       const card = document.createElement("div");
       card.id = id;
       card.className = "card-tile";
       card.innerHTML = `
         <h6>${trendTitle}</h6>
+        <div class="text-muted category-label" style="font-size: 0.75rem; margin-bottom: 5px;">${category}</div>
         <p></p>
         <div class="progress">
           <div class="progress-bar" style="width: 5%"></div>
@@ -341,6 +347,7 @@
       document.querySelectorAll(".card-tile").forEach(card => {
         const id = card.id;
         const title = card.querySelector("h6").textContent;
+        const category = card.querySelector(".category-label")?.textContent || "";
         const description = card.querySelector("p").textContent;
         const progress = card.querySelector(".progress-bar").style.width;
         const label = card.querySelector(".status-label").textContent;
@@ -349,7 +356,7 @@
 
         // specific logic to avoid saving blob urls that expire
         // for now we just save the metadata
-        cards.push({ id, title, description, progress, label });
+        cards.push({ id, title, description, progress, label, category });
       });
       localStorage.setItem("cards", JSON.stringify(cards));
     }
@@ -364,6 +371,7 @@
           card.className = "card-tile";
           card.innerHTML = `
             <h6>${c.title}</h6>
+            <div class="text-muted category-label" style="font-size: 0.75rem; margin-bottom: 5px;">${c.category || ""}</div>
             <p>${c.description}</p>
             <div class="progress">
               <div class="progress-bar" style="width: ${c.progress}"></div>
@@ -453,7 +461,9 @@
 
       trends.forEach(trend => {
         const id = generateId();
-        createCard(id, trend.trend);
+        // Look up category text if possible, for now just use the ID or empty
+        const catText = document.querySelector(`#category option[value='${category}']`)?.textContent || category || "General";
+        createCard(id, trend.trend, catText);
         generateQueue.push({ id, trend });
       });
 
@@ -470,7 +480,7 @@
       }
 
       const id = await generateId();
-      createCard(id, topic);
+      createCard(id, topic, "Custom");
       updateCard(id, { description, progress: 5, label: "Generating content..." });
 
       generateQueue.push({ id, trend: { trend: topic, body: description } });
