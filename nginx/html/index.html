@@ -88,6 +88,9 @@
       <button class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">
         ⚙️ Settings
       </button>
+      <button class="btn btn-danger" onclick="cancelAll()">
+        🚫 Cancel All
+      </button>
     </div>
   </div>
 
@@ -271,6 +274,7 @@
 
     let generateQueue = [], ttsQueue = [], alignQueue = [], burnQueue = [];
     let generateLock = false, ttsLock = false, alignLock = false, burnLock = false;
+    let activeTasks = {}; // Map of id -> AbortController
 
     function showToast(message) {
       const toast = document.createElement("div");
@@ -321,6 +325,19 @@
         btn.className = "btn btn-sm btn-outline-primary mt-2 w-100";
         btn.textContent = "Download Video";
         card.appendChild(btn);
+      } else {
+        // If not complete/downloadable, show cancel button if processing
+        // Remove potential existing cancel button first to avoid duplicates
+        const existingCancel = card.querySelector(".btn-cancel");
+        if (existingCancel) existingCancel.remove();
+
+        if (label && label !== "Cancelled" && label !== "Video expired (Refresh cleared cache)") {
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "btn btn-sm btn-outline-danger mt-2 w-100 btn-cancel";
+          cancelBtn.textContent = "Cancel";
+          cancelBtn.onclick = () => cancelTask(id);
+          card.appendChild(cancelBtn);
+        }
       }
       saveState();
     }
@@ -337,6 +354,7 @@
           <div class="progress-bar" style="width: 5%"></div>
         </div>
         <div class="status-label mt-1 text-muted" style="font-size: 0.8rem;">Queued...</div>
+        <button class="btn btn-sm btn-outline-danger mt-2 w-100 btn-cancel" onclick="cancelTask('${id}')">Cancel</button>
       `;
       cardGrid.appendChild(card);
       saveState();
@@ -388,11 +406,15 @@
       }
     }
 
-    async function withRetry(taskFn, onRetry) {
+    async function withRetry(taskFn, onRetry, signal) {
       while (true) {
+        if (signal && signal.aborted) throw new Error("Cancelled");
         try {
-          return await taskFn();
+          return await taskFn(signal);
         } catch (err) {
+          if (signal && signal.aborted) throw err; // Don't retry if cancelled
+          if (err.name === 'AbortError') throw err;
+
           if (onRetry) onRetry(err);
           showToast("Retrying after error...");
           await new Promise(res => setTimeout(res, 5000));
@@ -445,13 +467,17 @@
 
       showToast("⏳ Scraping Google Trends... This may take a few seconds.");
 
-      let trends = await withRetry(() =>
-        fetch("/api/scrape", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ geo, hours, status, sort, category })
-        }).then(res => res.json())
-      );
+      let trends;
+      try {
+        trends = await withRetry((signal) =>
+          fetch("/api/scrape", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ geo, hours, status, sort, category }),
+            signal
+          }).then(res => res.json())
+        );
+      } catch (e) { console.warn("Scrape cancelled or failed"); return; }
 
       if (!Array.isArray(trends)) {
         showToast("Error fetching trends");
@@ -495,19 +521,37 @@
       updateCard(id, { progress: 10, label: "Generating content..." });
 
       const settings = getSettings();
-      // Pass language preference to generateContent
-      const generated = await withRetry(() => generateContent({ ...trend, language: settings.language }), () => updateCard(id, { label: "Retrying generation..." }));
-      updateCard(id, {
-        title: generated.title,
-        description: generated.description,
-        progress: 30,
-        label: "Content generated"
-      });
+      // Create controller for this task
+      const controller = new AbortController();
+      activeTasks[id] = controller;
 
-      ttsQueue.push({ id, trend, generated });
-      generateLock = false;
-      processGenerate();
-      processTTS();
+      try {
+        // Pass language preference to generateContent
+        const generated = await withRetry(
+          (signal) => generateContent({ ...trend, language: settings.language }, signal),
+          () => updateCard(id, { label: "Retrying generation..." }),
+          controller.signal
+        );
+        updateCard(id, {
+          title: generated.title,
+          description: generated.description,
+          progress: 30,
+          label: "Content generated"
+        });
+
+        ttsQueue.push({ id, trend, generated });
+      } catch (e) {
+        if (e.name === 'AbortError' || e.message === 'Cancelled') {
+          console.log(`Task ${id} cancelled during generation`);
+        } else {
+          console.error(e);
+        }
+      } finally {
+        delete activeTasks[id];
+        generateLock = false;
+        processGenerate();
+        processTTS();
+      }
     }
 
     async function processTTS() {
@@ -518,14 +562,28 @@
       updateCard(id, { progress: 50, label: "Generating TTS..." });
 
       const settings = getSettings();
-      // Pass speaker preference to generateTTS
-      const ttsAudio = await withRetry(() => generateTTS(generated.body, settings.speaker), () => updateCard(id, { label: "Retrying TTS..." }));
-      alignQueue.push({ id, generated, ttsAudio });
-      updateCard(id, { progress: 60, label: "TTS generated" });
+      const controller = new AbortController();
+      activeTasks[id] = controller;
 
-      ttsLock = false;
-      processTTS();
-      processAlign();
+      try {
+        // Pass speaker preference to generateTTS
+        const ttsAudio = await withRetry(
+          (signal) => generateTTS(generated.body, settings.speaker, signal),
+          () => updateCard(id, { label: "Retrying TTS..." }),
+          controller.signal
+        );
+        alignQueue.push({ id, generated, ttsAudio });
+        updateCard(id, { progress: 60, label: "TTS generated" });
+      } catch (e) {
+        if (e.name === 'AbortError' || e.message === 'Cancelled') {
+          console.log(`Task ${id} cancelled during TTS`);
+        }
+      } finally {
+        delete activeTasks[id];
+        ttsLock = false;
+        processTTS();
+        processAlign();
+      }
     }
 
     async function processAlign() {
@@ -535,13 +593,25 @@
       const { id, generated, ttsAudio } = alignQueue.shift();
       updateCard(id, { progress: 70, label: "Aligning subtitles..." });
 
-      const srt = await withRetry(() => alignSubtitles(generated.body, ttsAudio.base64), () => updateCard(id, { label: "Retrying alignment..." }));
-      burnQueue.push({ id, srt, ttsAudio, title: generated.title });
-      updateCard(id, { progress: 80, label: "Subtitles aligned" });
+      const controller = new AbortController();
+      activeTasks[id] = controller;
 
-      alignLock = false;
-      processAlign();
-      processBurn();
+      try {
+        const srt = await withRetry(
+          (signal) => alignSubtitles(generated.body, ttsAudio.base64, signal),
+          () => updateCard(id, { label: "Retrying alignment..." }),
+          controller.signal
+        );
+        burnQueue.push({ id, srt, ttsAudio, title: generated.title });
+        updateCard(id, { progress: 80, label: "Subtitles aligned" });
+      } catch (e) {
+        if (e.name === 'AbortError' || e.message === 'Cancelled') console.log(`Task ${id} cancelled during align`);
+      } finally {
+        delete activeTasks[id];
+        alignLock = false;
+        processAlign();
+        processBurn();
+      }
     }
 
     async function processBurn() {
@@ -552,58 +622,112 @@
       updateCard(id, { progress: 90, label: "Rendering video..." });
 
       const settings = getSettings();
-      const video = await withRetry(() => burnVideo(ttsAudio.base64, srt, settings), () => updateCard(id, { label: "Retrying rendering..." }));
-      updateCard(id, { progress: 100, label: "Video ready", downloadUrl: video.url, title });
+      const controller = new AbortController();
+      activeTasks[id] = controller;
 
-      burnLock = false;
-      processBurn();
+      try {
+        const video = await withRetry(
+          (signal) => burnVideo(ttsAudio.base64, srt, settings, signal),
+          () => updateCard(id, { label: "Retrying rendering..." }),
+          controller.signal
+        );
+        updateCard(id, { progress: 100, label: "Video ready", downloadUrl: video.url, title });
+      } catch (e) {
+        if (e.name === 'AbortError' || e.message === 'Cancelled') console.log(`Task ${id} cancelled during burn`);
+      } finally {
+        delete activeTasks[id];
+        burnLock = false;
+        processBurn();
+      }
     }
 
     function copyToClipboard(text) {
       navigator.clipboard.writeText(text).then(() => showToast("Copied to clipboard"));
     }
 
+    function cancelTask(id) {
+      if (activeTasks[id]) {
+        activeTasks[id].abort();
+        delete activeTasks[id];
+      }
+      // Also remove from queues if present but not active
+      generateQueue = generateQueue.filter(i => i.id !== id);
+      ttsQueue = ttsQueue.filter(i => i.id !== id);
+      alignQueue = alignQueue.filter(i => i.id !== id);
+      burnQueue = burnQueue.filter(i => i.id !== id);
+
+      updateCard(id, { label: "Cancelled", progress: 0 });
+      const card = document.getElementById(id);
+      if (card) {
+        const btn = card.querySelector(".btn-cancel");
+        if (btn) btn.remove();
+      }
+      showToast("Task cancelled");
+    }
+
+    function cancelAll() {
+      Object.values(activeTasks).forEach(controller => controller.abort());
+      activeTasks = {};
+      generateQueue = [];
+      ttsQueue = [];
+      alignQueue = [];
+      burnQueue = [];
+
+      // Update all cards that were in progress
+      document.querySelectorAll(".card-tile").forEach(card => {
+        const label = card.querySelector(".status-label").textContent;
+        if (label !== "Video ready" && label !== "Video expired (Refresh cleared cache)" && label !== "Cancelled") {
+          updateCard(card.id, { label: "Cancelled", progress: 0 });
+          const btn = card.querySelector(".btn-cancel");
+          if (btn) btn.remove();
+        }
+      });
+      showToast("All tasks cancelled");
+    }
+
     // -------------------
     // API Helpers
     // -------------------
 
-    async function generateContent(trend) {
+    async function generateContent(trend, signal) {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(trend)
+        body: JSON.stringify(trend),
+        signal
       });
       return await res.json();
     }
 
     let speaker_id = undefined;
 
-    async function generateTTS(text, outputSpeakerId) {
+    async function generateTTS(text, outputSpeakerId, signal) {
       if (!outputSpeakerId && !speaker_id) {
-        const res = await fetch("/api/coquiSpeakerId");
+        const res = await fetch("/api/coquiSpeakerId", { signal });
         const data = await res.json();
         speaker_id = data.speakerId;
       }
       const speakerToUse = outputSpeakerId || speaker_id;
       const settings = getSettings();
       const lang = settings.language || "english";
-      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speakerToUse}&lang=${lang}`);
+      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speakerToUse}&lang=${lang}`, { signal });
       const blob = await res.blob();
       const base64 = await blobToBase64(blob);
       return { base64 };
     }
 
-    async function alignSubtitles(text, audioBase64) {
+    async function alignSubtitles(text, audioBase64, signal) {
       const res = await fetch("/api/align", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, audio: audioBase64 })
+        body: JSON.stringify({ text, audio: audioBase64 }),
+        signal
       });
       const result = await res.json();
       return result.srt;
     }
 
-    async function burnVideo(audioBase64, srt, settings) {
+    async function burnVideo(audioBase64, srt, settings, signal) {
       const body = {
         audio: audioBase64,
         subtitles: srt,
@@ -617,7 +741,8 @@
       const res = await fetch("/api/burn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal
       });
       const blob = await res.blob();
       return { url: URL.createObjectURL(blob) };
