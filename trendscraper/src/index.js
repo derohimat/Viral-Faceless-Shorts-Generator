@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { exec } from "child_process";
 import { v4 as uuidv4 } from "uuid";
+import * as googleTTS from "google-tts-api";
 
 // For __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -301,6 +302,71 @@ function cleanup(folder) {
     prompt = translationData.candidates[0].content.parts[0].text;
     console.log(`Prompt translated to ${LOCALE}:`, prompt);
   }
+
+  // ---------------- /tts ----------------
+  app.get("/tts", async (req, res) => {
+    const { text, speaker_id, lang = "english" } = req.query;
+
+    if (lang.toLowerCase() !== "english") {
+      try {
+        // Map language names to codes
+        const langMap = {
+          "english": "en",
+          "indonesian": "id",
+          "spanish": "es",
+          "french": "fr",
+          "german": "de",
+          "italian": "it",
+          "portuguese": "pt",
+          "hindi": "hi",
+          "japanese": "ja"
+        };
+        const code = langMap[lang.toLowerCase()] || "en";
+
+        console.log(`Using Google TTS for language: ${lang} (${code})`);
+
+        // google-tts-api splits long text automatically
+        const results = await googleTTS.getAllAudioBase64(text, {
+          lang: code,
+          slow: false,
+          host: "https://translate.google.com",
+          timeout: 10000,
+        });
+
+        // Concatenate base64 parts into a single buffer
+        const buffers = results.map(r => Buffer.from(r.base64, "base64"));
+        const finalBuffer = Buffer.concat(buffers);
+
+        res.setHeader("Content-Type", "audio/mp3");
+        res.send(finalBuffer);
+
+      } catch (err) {
+        console.error("Google TTS failed:", err);
+        res.status(500).send("TTS Generation Failed");
+      }
+    } else {
+      // Proxy to Coqui for English
+      // We forward the text and speaker_id
+      // Coqui endpoint: http://coqui:5002/api/tts?text=...&speaker_id=...
+      try {
+        const coquiUrl = `http://coqui:5002/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speaker_id}`;
+        const coquiRes = await fetch(coquiUrl);
+        if (!coquiRes.ok) throw new Error(`Coqui response ${coquiRes.status}`);
+
+        // Stream the response back
+        res.setHeader("Content-Type", "audio/wav"); // Coqui returns WAV
+        // Node 18 fetch returns stream in body
+        // We can convert to buffer or pipe if using node-fetch
+        // Native fetch body is a ReadableStream
+        const arrayBuffer = await coquiRes.arrayBuffer();
+        res.send(Buffer.from(arrayBuffer));
+
+      } catch (err) {
+        console.error("Coqui TTS failed:", err);
+        res.status(500).send("TTS Generation Failed");
+      }
+    }
+  });
 
   app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
 })();

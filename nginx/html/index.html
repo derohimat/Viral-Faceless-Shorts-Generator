@@ -585,7 +585,9 @@
         speaker_id = data.speakerId;
       }
       const speakerToUse = outputSpeakerId || speaker_id;
-      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speakerToUse}`);
+      const settings = getSettings();
+      const lang = settings.language || "english";
+      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&speaker_id=${speakerToUse}&lang=${lang}`);
       const blob = await res.blob();
       const base64 = await blobToBase64(blob);
       return { base64 };
