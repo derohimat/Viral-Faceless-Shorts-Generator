@@ -246,18 +246,45 @@ app.post("/burn", async (req, res) => {
     }
 
     // Burn subtitles, combine video + audio
+    const finalFilename = `${uuidv4()}.mp4`;
+    const finalPath = path.join("/app/outputs", finalFilename);
+
+    // Ensure outputs dir exists
+    if (!fs.existsSync("/app/outputs")) fs.mkdirSync("/app/outputs");
+
     await execPromise(
       `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "${filters}" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
     );
 
-    res.setHeader("Content-Type", "video/mp4");
-    const readStream = fs.createReadStream(outputPath);
-    readStream.pipe(res);
-    readStream.on("close", () => cleanup(tmp));
+    // Initial output was to tmp/outputPath, move it to final persistent location
+    fs.copyFileSync(outputPath, finalPath);
+
+    // Return the public URL
+    res.json({ url: `/outputs/${finalFilename}` });
+
+    // Cleanup tmp folder
+    cleanup(tmp);
   } catch (err) {
     console.error(err);
     cleanup(tmp);
     res.status(500).send("Internal server error");
+  }
+});
+
+// ---------------- /clear-data ----------------
+app.post("/clear-data", async (req, res) => {
+  try {
+    const outputsDir = "/app/outputs";
+    if (fs.existsSync(outputsDir)) {
+      const files = fs.readdirSync(outputsDir);
+      for (const file of files) {
+        fs.unlinkSync(path.join(outputsDir, file));
+      }
+    }
+    res.json({ success: true, message: "All generated data cleared." });
+  } catch (err) {
+    console.error("Error clearing data:", err);
+    res.status(500).json({ error: "Failed to clear data" });
   }
 });
 

@@ -224,10 +224,13 @@
             </div>
           </form>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-          <button type="button" class="btn btn-primary" onclick="saveSettings()" data-bs-dismiss="modal">Save
-            Settings</button>
+        <div class="modal-footer d-flex justify-content-between">
+          <button type="button" class="btn btn-danger" onclick="clearAllData()">🗑️ Delete All Data</button>
+          <div>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-primary" onclick="saveSettings()" data-bs-dismiss="modal">Save
+              Settings</button>
+          </div>
         </div>
       </div>
     </div>
@@ -396,11 +399,10 @@
             </div>
             <div class="status-label mt-1 text-muted" style="font-size: 0.8rem;">${c.label}</div>
           `;
-          // If it was completed, we can't restore the blob URL easily without backend changes.
-          // So we mark it as expired or needing regeneration if it was a blob.
-          if (c.label === "Video ready") {
-            card.querySelector(".status-label").textContent = "Video expired (Refresh cleared cache)";
-          }
+          // If it was completed, persistent URLs should still work.
+          // We don't mark as expired anymore since they are stored on server.
+          // However, if the server was wiped but localstorage wasn't, links might be broken.
+          // We assume they are valid if they exist.
           cardGrid.appendChild(card);
         });
       }
@@ -666,6 +668,7 @@
     }
 
     function cancelAll() {
+      if (!confirm("Stop all running tasks?")) return;
       Object.values(activeTasks).forEach(controller => controller.abort());
       activeTasks = {};
       generateQueue = [];
@@ -683,6 +686,21 @@
         }
       });
       showToast("All tasks cancelled");
+    }
+
+    async function clearAllData() {
+      if (!confirm("Are you sure? This will delete ALL generated videos and clear the current list. This cannot be undone.")) return;
+
+      try {
+        const res = await fetch("/api/clear-data", { method: "POST" });
+        if (!res.ok) throw new Error("Failed to clear data");
+
+        localStorage.removeItem("cards");
+        location.reload();
+      } catch (e) {
+        console.error(e);
+        showToast("Error clearing data: " + e.message);
+      }
     }
 
     // -------------------
@@ -744,8 +762,9 @@
         body: JSON.stringify(body),
         signal
       });
-      const blob = await res.blob();
-      return { url: URL.createObjectURL(blob) };
+      // Backend now returns { url: "/outputs/..." }
+      const data = await res.json();
+      return { url: data.url };
     }
 
     function blobToBase64(blob) {

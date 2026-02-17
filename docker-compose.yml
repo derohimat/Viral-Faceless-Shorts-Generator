@@ -8,6 +8,7 @@ services:
       - COQUI_SPEAKER_ID
     volumes:
       - ./videos:/mnt/videos
+      - ./outputs:/app/outputs
   coqui:
     build:
       context: ./coqui
@@ -20,7 +21,8 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/html:/usr/share/nginx/html:ro
+      - ./nginx/html:/usr/share/nginx/html
+      - ./outputs:/usr/share/nginx/html/outputs:ro
     depends_on:
       - trendscraper
       - coqui
