@@ -8,6 +8,7 @@ import { dirname } from "path";
 import { exec } from "child_process";
 import { v4 as uuidv4 } from "uuid";
 import * as googleTTS from "google-tts-api";
+import { cleanup } from "./utils.js";
 
 // For __dirname in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -387,10 +388,6 @@ async function downloadFile(url, dest) {
 
     fileStream.on("error", reject);
   });
-}
-
-function cleanup(folder) {
-  fs.rmSync(folder, { recursive: true, force: true });
 }
 
 (async () => {
