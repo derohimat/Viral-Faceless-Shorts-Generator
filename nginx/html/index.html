@@ -189,6 +189,21 @@
               <small class="text-muted">Common male: p340, p226. Common female: p335, p307.</small>
             </div>
 
+            <h6 class="border-bottom pb-2 mb-3 mt-4">Video Source</h6>
+            <div class="mb-3">
+              <label for="setVideoSource" class="form-label">Source</label>
+              <select class="form-control" id="setVideoSource">
+                <option value="local">Local (Random)</option>
+                <option value="pexels">Pexels (Search)</option>
+              </select>
+            </div>
+            <div class="mb-3" id="pexelsKeyContainer" style="display:none;">
+              <label for="setPexelsKey" class="form-label">Pexels API Key</label>
+              <input type="password" class="form-control" id="setPexelsKey" placeholder="Enter your Pexels API Key">
+              <small class="text-muted"><a href="https://www.pexels.com/api/" target="_blank">Get a free key
+                  here</a></small>
+            </div>
+
             <h6 class="border-bottom pb-2 mb-3 mt-4">Subtitles & Visuals</h6>
             <div class="row g-2">
               <div class="col-6">
@@ -432,7 +447,9 @@
         outline: document.getElementById("setOutline").value,
         watermark: document.getElementById("setWatermark").value,
         wmColor: document.getElementById("setWmColor").value,
-        wmOpacity: document.getElementById("setWmOpacity").value
+        wmOpacity: document.getElementById("setWmOpacity").value,
+        videoSource: document.getElementById("setVideoSource").value,
+        pexelsKey: document.getElementById("setPexelsKey").value
       };
       localStorage.setItem("appSettings", JSON.stringify(settings));
       showToast("Settings saved!");
@@ -447,7 +464,9 @@
         outline: 2,
         watermark: "",
         wmColor: "white",
-        wmOpacity: 0.5
+        wmOpacity: 0.5,
+        videoSource: "local",
+        pexelsKey: ""
       };
     }
 
@@ -628,8 +647,10 @@
       activeTasks[id] = controller;
 
       try {
+        // We pass 'title' as video search query for simplicity, or we could use trend keywords
+        // For custom topic, title is the topic. For trend, it's the trend text.
         const video = await withRetry(
-          (signal) => burnVideo(ttsAudio.base64, srt, settings, signal),
+          (signal) => burnVideo(ttsAudio.base64, srt, settings, title, signal),
           () => updateCard(id, { label: "Retrying rendering..." }),
           controller.signal
         );
@@ -745,7 +766,7 @@
       return result.srt;
     }
 
-    async function burnVideo(audioBase64, srt, settings, signal) {
+    async function burnVideo(audioBase64, srt, settings, videoQuery, signal) {
       const body = {
         audio: audioBase64,
         subtitles: srt,
@@ -753,7 +774,10 @@
         outline: settings.outline,
         watermark: settings.watermark,
         watermarkColor: settings.wmColor,
-        watermarkOpacity: settings.wmOpacity
+        watermarkOpacity: settings.wmOpacity,
+        videoSource: settings.videoSource,
+        pexelsApiKey: settings.pexelsKey,
+        videoQuery: videoQuery
       };
 
       const res = await fetch("/api/burn", {
@@ -822,6 +846,15 @@
       document.getElementById("setWatermark").value = settings.watermark;
       document.getElementById("setWmColor").value = settings.wmColor;
       document.getElementById("setWmOpacity").value = settings.wmOpacity;
+      document.getElementById("setVideoSource").value = settings.videoSource || "local";
+      document.getElementById("setPexelsKey").value = settings.pexelsKey || "";
+
+      const togglePexels = () => {
+        const isPexels = document.getElementById("setVideoSource").value === "pexels";
+        document.getElementById("pexelsKeyContainer").style.display = isPexels ? "block" : "none";
+      };
+      togglePexels();
+      document.getElementById("setVideoSource").addEventListener("change", togglePexels);
     });
   </script>
 
