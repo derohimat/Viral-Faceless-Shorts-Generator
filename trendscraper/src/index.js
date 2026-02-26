@@ -80,7 +80,7 @@ app.post("/scrape", async (req, res) => {
     const client = await page.createCDPSession();
     await client.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: downloadsFolder });
 
-    const filesBefore = new Set(fs.readdirSync(downloadsFolder));
+    const filesBefore = new Set(await fs.promises.readdir(downloadsFolder));
 
     try {
       await page.waitForSelector("tr[role='row']", { timeout: 5000 });
@@ -97,7 +97,7 @@ app.post("/scrape", async (req, res) => {
     const start = Date.now();
 
     while (Date.now() - start < timeoutMs) {
-      const currentFiles = new Set(fs.readdirSync(downloadsFolder));
+      const currentFiles = new Set(await fs.promises.readdir(downloadsFolder));
       const newFiles = [...currentFiles].filter((f) => !filesBefore.has(f) && f.endsWith(".csv"));
       if (newFiles.length > 0) {
         downloadedFile = newFiles[0];
@@ -195,7 +195,7 @@ app.post("/burn", async (req, res) => {
   if (!audio || !subtitles) return res.status(400).send("Missing parameters");
 
   const tmp = `/tmp/${uuidv4()}`;
-  fs.mkdirSync(tmp);
+  await fs.promises.mkdir(tmp, { recursive: true });
 
   try {
     const audioPath = `${tmp}/audio.wav`;
@@ -203,127 +203,113 @@ app.post("/burn", async (req, res) => {
     const assPath = `${tmp}/sub.ass`;
     const outputPath = `${tmp}/output.mp4`;
 
-    fs.writeFileSync(audioPath, Buffer.from(audio, "base64"));
-    fs.writeFileSync(subPath, subtitles);
+    await Promise.all([
+      fs.promises.writeFile(audioPath, Buffer.from(audio, "base64")),
+      fs.promises.writeFile(subPath, subtitles)
+    ]);
 
-    let { video, audio, subtitles, fontsize = 30, outline = 2, watermark, watermarkColor = "white", watermarkOpacity = 0.5, videoSource = "local", pexelsApiKey, videoQuery } = req.body;
-    if (!audio || !subtitles) return res.status(400).send("Missing parameters");
+    let videoFilePath;
+    let startOffset = 0;
 
-    const tmp = `/tmp/${uuidv4()}`;
-    fs.mkdirSync(tmp);
+    // Pexels Integration
+    if (videoSource === "pexels" && pexelsApiKey && videoQuery) {
+      try {
+        console.log(`Searching Pexels for: ${videoQuery}`);
+        const pexelsRes = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(videoQuery)}&per_page=1&orientation=portrait&size=medium`, {
+          headers: { "Authorization": pexelsApiKey }
+        });
+        const pexelsData = await pexelsRes.json();
 
-    try {
-      const audioPath = `${tmp}/audio.wav`;
-      const subPath = `${tmp}/sub.srt`;
-      const assPath = `${tmp}/sub.ass`;
-      const outputPath = `${tmp}/output.mp4`;
+        if (pexelsData.videos && pexelsData.videos.length > 0) {
+          const videoData = pexelsData.videos[0];
+          // Try to find the best quality file, preferably HD
+          const videoFiles = videoData.video_files || [];
+          // Sort by resolution (width * height) desc
+          videoFiles.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+          const bestVideo = videoFiles[0];
 
-      fs.writeFileSync(audioPath, Buffer.from(audio, "base64"));
-      fs.writeFileSync(subPath, subtitles);
-
-      let videoFilePath;
-      let startOffset = 0;
-
-      // Pexels Integration
-      if (videoSource === "pexels" && pexelsApiKey && videoQuery) {
-        try {
-          console.log(`Searching Pexels for: ${videoQuery}`);
-          const pexelsRes = await fetch(`https://api.pexels.com/videos/search?query=${encodeURIComponent(videoQuery)}&per_page=1&orientation=portrait&size=medium`, {
-            headers: { "Authorization": pexelsApiKey }
-          });
-          const pexelsData = await pexelsRes.json();
-
-          if (pexelsData.videos && pexelsData.videos.length > 0) {
-            const videoData = pexelsData.videos[0];
-            // Try to find the best quality file, preferably HD
-            const videoFiles = videoData.video_files || [];
-            // Sort by resolution (width * height) desc
-            videoFiles.sort((a, b) => (b.width * b.height) - (a.width * a.height));
-            const bestVideo = videoFiles[0];
-
-            if (bestVideo) {
-              const pexelsPath = `${tmp}/pexels_video.mp4`;
-              console.log(`Downloading Pexels video: ${bestVideo.link}`);
-              await downloadFile(bestVideo.link, pexelsPath);
-              videoFilePath = pexelsPath;
-              // No random start offset for pexels usually as they are short, but we can verify
-              // const pexelsDuration = await getDuration(pexelsPath);
-              // startOffset = 0; 
-            }
-          } else {
-            console.log("No videos found on Pexels, falling back to local.");
+          if (bestVideo) {
+            const pexelsPath = `${tmp}/pexels_video.mp4`;
+            console.log(`Downloading Pexels video: ${bestVideo.link}`);
+            await downloadFile(bestVideo.link, pexelsPath);
+            videoFilePath = pexelsPath;
+            // No random start offset for pexels usually as they are short, but we can verify
+            // const pexelsDuration = await getDuration(pexelsPath);
+            // startOffset = 0;
           }
-        } catch (err) {
-          console.error("Pexels error:", err);
-        }
-      }
-
-      // Fallback to local if videoFilePath is not set
-      if (!videoFilePath) {
-        if (!video) {
-          const allFiles = fs.readdirSync("/mnt/videos");
-          const defaultVideos = allFiles.filter(f => f.startsWith("default_"));
-          if (defaultVideos.length === 0) throw new Error("No default videos found");
-          video = defaultVideos[Math.floor(Math.random() * defaultVideos.length)];
-          videoFilePath = path.join("/mnt/videos", video);
-
-          // Only calc offset for local long videos
-          const videoDuration = await getDuration(videoFilePath);
-          const audioDuration = await getDuration(audioPath);
-          const delta = Math.max(videoDuration - audioDuration - 1, 0);
-          startOffset = delta > 0 ? Math.random() * delta : 0;
         } else {
-          videoFilePath = path.join("/mnt/videos", video);
-          if (!fs.existsSync(videoFilePath)) return res.status(404).send("Video file not found");
+          console.log("No videos found on Pexels, falling back to local.");
+        }
+      } catch (err) {
+        console.error("Pexels error:", err);
+      }
+    }
+
+    // Fallback to local if videoFilePath is not set
+    if (!videoFilePath) {
+      if (!video) {
+        const allFiles = await fs.promises.readdir("/mnt/videos");
+        const defaultVideos = allFiles.filter(f => f.startsWith("default_"));
+        if (defaultVideos.length === 0) throw new Error("No default videos found");
+        video = defaultVideos[Math.floor(Math.random() * defaultVideos.length)];
+        videoFilePath = path.join("/mnt/videos", video);
+
+        // Only calc offset for local long videos
+        const videoDuration = await getDuration(videoFilePath);
+        const audioDuration = await getDuration(audioPath);
+        const delta = Math.max(videoDuration - audioDuration - 1, 0);
+        startOffset = delta > 0 ? Math.random() * delta : 0;
+      } else {
+        videoFilePath = path.join("/mnt/videos", video);
+        try {
+          await fs.promises.access(videoFilePath);
+        } catch {
+          return res.status(404).send("Video file not found");
         }
       }
-
-      // Generate styled ASS subtitles
-      await execPromise(`ffmpeg -y -i "${subPath}" "${assPath}"`);
-      await execPromise(`sed -i '/^Style:/c\\Style: Default,Montserrat ExtraBold,${fontsize},&H00FFFFFF,&H00000000,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,${outline},2,10,10,10,1' "${assPath}"`);
-      await execPromise(`grep -q "WrapStyle" "${assPath}" && sed -i 's/WrapStyle.*/WrapStyle: 0/' "${assPath}" || sed -i '/^\\[Script Info\\]/a WrapStyle: 0' "${assPath}"`);
-
-      // Build filter string
-      // Subtitles filter
-      let filters = `subtitles=${assPath}:fontsdir=/app/fonts`;
-
-      // Add watermark if present
-      if (watermark) {
-        // Simple positioning: centered at the top/bottom or just bottom right? 
-        // Let's do bottom center with padding.
-        // opacity adjustment requires fontcolor=white@0.5 format if using text, or using alpha in drawtext.
-        // ffmpeg drawtext alpha: fontcolor_expr=...
-        // simplest: fontcolor=${watermarkColor}@${watermarkOpacity}
-        filters += `,drawtext=text='${watermark}':x=(w-text_w)/2:y=h-th-50:fontsize=24:fontcolor=${watermarkColor}@${watermarkOpacity}:borderw=1:bordercolor=black`;
-      }
-
-      // Burn subtitles, combine video + audio
-      const finalFilename = `${uuidv4()}.mp4`;
-      const finalPath = path.join("/app/outputs", finalFilename);
-
-      // Ensure outputs dir exists
-      if (!fs.existsSync("/app/outputs")) fs.mkdirSync("/app/outputs");
-
-      await execPromise(
-        `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "${filters}" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
-      );
-
-      // Initial output was to tmp/outputPath, move it to final persistent location
-      fs.copyFileSync(outputPath, finalPath);
-
-      // Return the public URL
-      res.json({ url: `/outputs/${finalFilename}` });
-
-      // Cleanup tmp folder
-      cleanup(tmp);
-    } catch (err) {
-      console.error(err);
-      cleanup(tmp);
-      res.status(500).send("Internal server error");
     }
+
+    // Generate styled ASS subtitles
+    await execPromise(`ffmpeg -y -i "${subPath}" "${assPath}"`);
+    await execPromise(`sed -i '/^Style:/c\\Style: Default,Montserrat ExtraBold,${fontsize},&H00FFFFFF,&H00000000,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,${outline},2,10,10,10,1' "${assPath}"`);
+    await execPromise(`grep -q "WrapStyle" "${assPath}" && sed -i 's/WrapStyle.*/WrapStyle: 0/' "${assPath}" || sed -i '/^\\[Script Info\\]/a WrapStyle: 0' "${assPath}"`);
+
+    // Build filter string
+    // Subtitles filter
+    let filters = `subtitles=${assPath}:fontsdir=/app/fonts`;
+
+    // Add watermark if present
+    if (watermark) {
+      // Simple positioning: centered at the top/bottom or just bottom right?
+      // Let's do bottom center with padding.
+      // opacity adjustment requires fontcolor=white@0.5 format if using text, or using alpha in drawtext.
+      // ffmpeg drawtext alpha: fontcolor_expr=...
+      // simplest: fontcolor=${watermarkColor}@${watermarkOpacity}
+      filters += `,drawtext=text='${watermark}':x=(w-text_w)/2:y=h-th-50:fontsize=24:fontcolor=${watermarkColor}@${watermarkOpacity}:borderw=1:bordercolor=black`;
+    }
+
+    // Burn subtitles, combine video + audio
+    const finalFilename = `${uuidv4()}.mp4`;
+    const finalPath = path.join("/app/outputs", finalFilename);
+
+    // Ensure outputs dir exists
+    await fs.promises.mkdir("/app/outputs", { recursive: true });
+
+    await execPromise(
+      `ffmpeg -y -stream_loop -1 -ss ${startOffset.toFixed(2)} -i "${videoFilePath}" -i "${audioPath}" -vf "${filters}" -map 0:v:0 -map 1:a:0 -c:v libx264 -c:a aac -shortest "${outputPath}"`
+    );
+
+    // Initial output was to tmp/outputPath, move it to final persistent location
+    await fs.promises.copyFile(outputPath, finalPath);
+
+    // Return the public URL
+    res.json({ url: `/outputs/${finalFilename}` });
+
+    // Cleanup tmp folder
+    await cleanup(tmp);
   } catch (err) {
     console.error(err);
-    cleanup(tmp);
+    await cleanup(tmp);
     res.status(500).send("Internal server error");
   }
 });
@@ -333,11 +319,11 @@ app.post("/burn", async (req, res) => {
 app.post("/clear-data", async (req, res) => {
   try {
     const outputsDir = "/app/outputs";
-    if (fs.existsSync(outputsDir)) {
-      const files = fs.readdirSync(outputsDir);
-      for (const file of files) {
-        fs.unlinkSync(path.join(outputsDir, file));
-      }
+    try {
+      const files = await fs.promises.readdir(outputsDir);
+      await Promise.all(files.map(file => fs.promises.unlink(path.join(outputsDir, file))));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
     }
     res.json({ success: true, message: "All generated data cleared." });
   } catch (err) {
@@ -389,8 +375,8 @@ async function downloadFile(url, dest) {
   });
 }
 
-function cleanup(folder) {
-  fs.rmSync(folder, { recursive: true, force: true });
+async function cleanup(folder) {
+  await fs.promises.rm(folder, { recursive: true, force: true });
 }
 
 (async () => {
