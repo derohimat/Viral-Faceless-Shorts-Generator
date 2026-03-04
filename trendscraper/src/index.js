@@ -286,7 +286,7 @@ app.post("/burn", async (req, res) => {
 
       // Build filter string
       // Subtitles filter
-      let filters = `subtitles=${assPath}:fontsdir=/app/fonts`;
+      let filters = `eq=saturation=1.2:contrast=1.05,unsharp=5:5:1.0:5:5:0.0,vignette=PI/4,subtitles=${assPath}:fontsdir=/app/fonts`;
 
       // Add watermark if present
       if (watermark) {

@@ -1,2 +1,5 @@
 .env
 videos/*.mp4
+node_modules/
+trendscraper/src/node_modules/
+package-lock.json
